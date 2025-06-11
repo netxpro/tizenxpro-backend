@@ -2,6 +2,12 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 
+// import * as hanime from './api/hanime.js';
+// import * as xhamster from './api/xhamster.js';
+
+// hanime.registerRoutes(app, '/api/hanime');
+// xhamster.registerRoutes(app, '/api/xhamster');
+
 const app = express();
 
 app.use((req, res, next) => {
@@ -29,23 +35,22 @@ for (const file of platformFiles) {
 }
 
 
-app.get('/api/platforms', (req, res) => {
-  const label = {
-    xhamster: "xHamster",
-    // TODO: Add more platform here
-  };
-  const comments = {
-    xhamster: "Free Porn Videos & XXX Movies: Sex Videos Tube | xHamster",
-    // TODO: Add more platform here
-  };
-  const platforms = platformFiles.map(f => {
+app.get('/api/platforms', async (req, res) => {
+  const platforms = await Promise.all(platformFiles.map(async f => {
     const id = f.replace('.js', '');
+    const module = await import(`./api/${f}`);
+    // Nutze getPlatformInfo, falls vorhanden
+    if (typeof module.getPlatformInfo === 'function') {
+      return module.getPlatformInfo();
+    }
+    // Fallback falls alt
     return {
       id,
-      label: label[id] || "",
-      comment: comments[id] || ""
+      label: module.platformLabel || "",
+      comment: module.platformComment || "",
+      settings: null
     };
-  });
+  }));
   res.json(platforms);
 });
 
