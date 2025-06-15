@@ -4,7 +4,11 @@ import { videojson } from '../utils/video.js';
 import { categoryjson } from '../utils/category.js';
 import { registerPlatformRoutes } from '../utils/platformRouter.js';
 import { platformjson } from '../utils/platform.js';
+import puppeteer from 'puppeteer';
+import JSON5 from 'json5';
+import { videoArrJson, subtitlesArrJson } from '../utils/arr.js';
 
+// Default headers for all xHamster requests
 const XHAMSTER_HEADERS = {
   'Referer': 'https://xhamster.com/',
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/114.0.0.0 Safari/537.36',
@@ -20,10 +24,12 @@ const XHAMSTER_HEADERS = {
   'Sec-Fetch-User': '?1',
 };
 
+// Helper for GET requests with default headers
 function xhamsterGet(url, options = {}) {
   return axios.get(url, { headers: XHAMSTER_HEADERS, ...options });
 }
 
+// Get base URL depending on orientation
 function getBaseUrl(orientation = "straight") {
   switch (orientation) {
     case "gay": return "https://xhamster.com/gay";
@@ -32,6 +38,7 @@ function getBaseUrl(orientation = "straight") {
   }
 }
 
+// Fetch categories for a given orientation
 export async function getXhamsterCategories(orientation = "straight") {
   const base = getBaseUrl(orientation);
   const url = `${base}/categories/hd`;
@@ -57,6 +64,7 @@ export async function getXhamsterCategories(orientation = "straight") {
   return categories;
 }
 
+// Fetch all categories (main page)
 export async function getCategories() {
   const url = "https://xhamster.com/categories";
   const { data } = await axios.get(url, { headers: XHAMSTER_HEADERS });
@@ -93,6 +101,7 @@ export async function getCategories() {
   return categories;
 }
 
+// Fetch videos for a category and page
 export async function getXhamsterCategory(category, page = 1, orientation = "straight") {
   const base = getBaseUrl(orientation);
   const url = page > 1
@@ -122,6 +131,7 @@ export async function getXhamsterCategory(category, page = 1, orientation = "str
     }
   });
 
+  // Pagination detection
   let totalPages = 1;
   $('nav[data-role="pagination-cleaner"] .page-list a.page-button-link').each((_, el) => {
     const num = parseInt($(el).text().trim(), 10);
@@ -135,6 +145,7 @@ export async function getXhamsterCategory(category, page = 1, orientation = "str
   return { videos: results, totalPages, orientation: orientation };
 }
 
+// Search videos by query and orientation
 export async function searchXhamster(query, orientation = "straight", page = 1) {
   const base = getBaseUrl(orientation);
   const url = page > 1
@@ -164,6 +175,7 @@ export async function searchXhamster(query, orientation = "straight", page = 1) 
     }
   });
 
+  // Pagination detection
   let totalPages = 1;
   $('ul.test-pager a[data-page]').each((_, el) => {
     const val = $(el).attr('data-page');
@@ -186,6 +198,7 @@ export async function searchXhamster(query, orientation = "straight", page = 1) 
   return { results, totalPages, orientation: orientation };
 }
 
+// Fetch featured videos for a given orientation
 export async function featuredXhamster(orientation = "straight") {
   const base = getBaseUrl(orientation);
   const url = `${base}/hd`;
@@ -214,28 +227,30 @@ export async function featuredXhamster(orientation = "straight") {
     });
 
     if (results.length === 0) {
-      console.error('[xhamster/featured] Keine Videos gefunden!');
-      throw new Error('Keine Videos gefunden. Möglicherweise Blockierung oder HTML geändert.');
+      console.error('[xhamster/featured] No videos found!');
+      throw new Error('No videos found. Possibly blocked or HTML changed.');
     }
     return results;
   } catch (err) {
-    console.error('[xhamster/featured] Fehler:', err.message);
+    console.error('[xhamster/featured] Error:', err.message);
     throw err;
   }
 }
 
+// Try to extract direct MP4 URL from video page
 export async function getDirectXhamsterUrl(videoPageUrl) {
   try {
     const { data } = await xhamsterGet(videoPageUrl);
     const match = data.match(/<video[^>]+src="([^"]+\.mp4[^"]*)"/i);
     if (match && match[1]) return match[1];
-    console.warn('[XHAMSTER] no vids found in <noscript>');
+    console.warn('[XHAMSTER] No videos found in <noscript>');
   } catch (err) {
     console.error(`[XHAMSTER] ERROR: ${videoPageUrl}`, err.message);
   }
   return null;
 }
 
+// Category API for platformRouter
 export async function getCategory(category, page = 1, req) {
   const orientation = req?.query?.orientation || "straight";
   return getXhamsterCategory(category, page, orientation);
@@ -248,15 +263,99 @@ export async function featured(req) {
   const orientation = req?.query?.orientation || "straight";
   return featuredXhamster(orientation);
 }
-export function getVidUrl(url) {
-  return getDirectXhamsterUrl(url);
+
+// Extract video and subtitle URLs from a video page
+export async function getVidUrl(url) {
+  // 1. Extract video URLs (Cheerio + M3U8)
+  const { data } = await xhamsterGet(url);
+  const $ = cheerio.load(data);
+
+  // Try to find M3U8 URL in HTML or JS
+  const m3u8Match = data.match(/"(https:\/\/[^"]+\.m3u8[^"]*)"/i);
+  let videoArr = [];
+  if (m3u8Match && m3u8Match[1]) {
+    try {
+      const m3u8Text = (await axios.get(m3u8Match[1], { headers: XHAMSTER_HEADERS })).data;
+      const lines = m3u8Text.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].startsWith('#EXT-X-STREAM-INF')) {
+          const resMatch = lines[i].match(/RESOLUTION=(\d+)x(\d+)/);
+          if (resMatch) {
+            let quality = resMatch[1];
+            // Treat 3840 as 2160 (4K)
+            if (quality === "3840") quality = "2160";
+            const streamUrl = lines[i + 1].startsWith('http') ? lines[i + 1] : m3u8Match[1].replace(/\/[^/]*$/, '/') + lines[i + 1];
+            videoArr.push(videoArrJson({ quality, url: streamUrl, source: "xhamster" }));
+          }
+        }
+      }
+      videoArr.sort((a, b) => parseInt(b.quality) - parseInt(a.quality));
+    } catch (err) {
+      let quality = "hls";
+      let url = m3u8Match[1];
+      videoArr = [videoArrJson({ quality, url, source: "xhamster" })];
+    }
+  } else {
+    // Fallback: MP4 from <noscript>
+    const noscriptMatch = data.match(/<video[^>]+src="([^"]+\/(\d{3,4})p\.h264\.mp4)"/i);
+    if (noscriptMatch && noscriptMatch[1] && noscriptMatch[2]) {
+      let quality = noscriptMatch[2] === "3840" ? "2160" : noscriptMatch[2];
+      videoArr = [videoArrJson({ quality, url: noscriptMatch[1], source: "xhamster" })];
+    }
+  }
+
+  // TODO: Subtitles for xHamster
+
+  // Try to extract subtitles from JS object
+  const scriptTagMatch = data.match(/<script[^>]+id=["']initials-script["'][^>]*>([\s\S]*?)<\/script>/i);
+  let subtitlesArr = [];
+  if (scriptTagMatch && scriptTagMatch[1]) {
+    const initialsObjStr = extractObjectFromScript(scriptTagMatch[1], 'window.initials');
+    let initials = null;
+    try {
+      if (initialsObjStr) initials = JSON5.parse(initialsObjStr);
+    } catch (e) {
+      console.error('[XHAMSTER] Error parsing:', e.message);
+    }
+
+    // Try to find subtitles in all possible structures
+    const tracks =
+      initials?.xplayerPluginSettings?.subtitles?.tracks ||
+      initials?.xplayerSettings?.subtitles?.tracks ||
+      initials?.subtitles?.tracks;
+
+    if (Array.isArray(tracks)) {
+      subtitlesArr = tracks.map(track => {
+        const url = track.urls?.vtt;
+        return url ? subtitlesArrJson({
+          lang: track.lang,
+          label: track.label,
+          url
+        }) : null;
+      }).filter(Boolean);
+
+      // Always put English first
+      subtitlesArr.sort((a, b) => (a.lang === "en" ? -1 : b.lang === "en" ? 1 : 0));
+    }
+  }
+
+  // Return like hstream
+  return {
+    source: {
+      videoArr,
+      subtitlesArr
+    }
+  };
 }
+
+// Proxy a video stream with default headers
 export async function proxy(url, res) {
   const response = await axios.get(url, { headers: XHAMSTER_HEADERS, responseType: 'stream' });
   res.set(response.headers);
   response.data.pipe(res);
 }
 
+// Platform info
 export const platformId = "xhamster";
 export const platformLabel = "xHamster";
 export const platformComment = "Free Porn Videos & XXX Movies: Sex Videos Tube | xHamster";
@@ -271,6 +370,7 @@ export function getPlatformInfo() {
   });
 }
 
+// Register all routes for this platform
 export function registerRoutes(app, basePath) {
   registerPlatformRoutes(app, basePath, {
     getCategories,
@@ -280,4 +380,21 @@ export function registerRoutes(app, basePath) {
     getVidUrl,
     proxy,
   });
+}
+
+// Extract JS object from script tag by variable name
+function extractObjectFromScript(script, varName) {
+  // Allow any whitespace and optional semicolon
+  const regex = new RegExp(varName.replace('.', '\\.') + '\\s*=\\s*({)', 'm');
+  const match = script.match(regex);
+  if (!match) return null;
+  const start = match.index + match[0].lastIndexOf('{');
+  let open = 1, end = start + 1;
+  while (open > 0 && end < script.length) {
+    if (script[end] === '{') open++;
+    else if (script[end] === '}') open--;
+    end++;
+  }
+  if (open !== 0) return null;
+  return script.slice(start, end);
 }

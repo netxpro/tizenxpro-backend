@@ -1,6 +1,7 @@
 import axios from 'axios';
 
 export function registerPlatformRoutes(app, basePath, platformApi) {
+  // Category endpoints
   app.get(`${basePath}/categories`, async (req, res) => {
     try {
       const categories = await platformApi.getCategories(req);
@@ -16,7 +17,7 @@ export function registerPlatformRoutes(app, basePath, platformApi) {
     if (!category) return res.status(400).json({ error: 'Missing category' });
     try {
       const { videos, totalPages, sourceSetting, notFound } = await platformApi.getCategory(category, page, req);
-      if (notFound) return res.status(404).json({ error: 'Kategorie/Tag nicht gefunden' });
+      if (notFound) return res.status(404).json({ error: 'Category/tag not found' });
       res.json({ videos, totalPages, page, sourceSetting });
     } catch (err) {
       console.error('Category Error:', err);
@@ -40,58 +41,32 @@ export function registerPlatformRoutes(app, basePath, platformApi) {
   app.get(`${basePath}/vidurl`, async (req, res) => {
     const { url } = req.query;
     if (!url || !url.startsWith('https://')) {
-      return res.status(400).json({ error: 'Ungültige oder fehlende URL' });
+      return res.status(400).json({ error: 'Invalid or missing URL' });
     }
     try {
-      const directUrl = await platformApi.getVidUrl(url);
-      if (!directUrl) {
-        return res.status(404).json({ error: 'Video-URL konnte nicht extrahiert werden' });
+      const result = await platformApi.getVidUrl(url);
+      if (!result) {
+        return res.status(404).json({ error: 'Video URL could not be extracted' });
       }
-      return res.json({ directUrl });
+      return res.json(result);
     } catch (err) {
       res.status(500).json({ error: 'Internal server error' });
     }
   });
 
-  app.get(`${basePath}/proxy`, async (req, res) => {
+  // Proxy handler for both variants
+  app.get(`${basePath}/proxy`, async (req, res, next) => {
     const targetUrl = req.query.url;
-    if (!targetUrl) return res.status(400).send('Missing url');
-    try {
-      if (targetUrl.endsWith('.mp4')) {
-        res.setHeader('Content-Type', 'video/mp4');
-        await platformApi.proxy(targetUrl, res);
-      } else if (targetUrl.endsWith('.m3u8')) {
-        const axiosResponse = await axios.get(targetUrl, { responseType: 'text' });
-        let m3u8Text = axiosResponse.data;
+    if (!targetUrl) return next(); // If no query, pass to next route
 
-        m3u8Text = m3u8Text.replace(
-          /(https?:\/\/[^\s"']+\.(ts|html|m4s))/g,
-          (match) => {
-            // Nur ersetzen, wenn noch keine Proxy-URL
-            if (match.includes(`${basePath}/proxy?url=`)) return match;
-            return `${basePath}/proxy?url=${encodeURIComponent(match)}`;
-          }
-        );
+    await handleProxy(targetUrl, req, res, basePath, platformApi);
+  });
 
-        m3u8Text = m3u8Text.replace(
-          /^([^\s#][^\s]*\.(ts|html|m4s))$/gm,
-          (match) => {
-            if (match.includes(`${basePath}/proxy?url=`)) return match;
-            const absUrl = new URL(match, targetUrl).href;
-            return `${basePath}/proxy?url=${encodeURIComponent(absUrl)}`;
-          }
-        );
-
-        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-        res.send(m3u8Text);
-      } else {
-
-        await platformApi.proxy(targetUrl, res);
-      }
-    } catch (err) {
-      console.error('Proxy failed for:', targetUrl, err?.response?.status, err?.message);
-      res.status(500).send('Proxy failed');
-    }
+  app.get(`${basePath}/proxy/*`, async (req, res) => {
+    const restPath = req.params[0];
+    if (!restPath) return res.status(400).send('Missing url');
+    const targetUrl = 'https://' + restPath;
+    await handleProxy(targetUrl, req, res, basePath, platformApi);
   });
 
   app.get(`${basePath}/featured`, async (req, res) => {
@@ -102,4 +77,74 @@ export function registerPlatformRoutes(app, basePath, platformApi) {
       res.status(500).json({ error: 'Internal server error' });
     }
   });
+}
+
+// Helper function for proxy logic
+async function handleProxy(targetUrl, req, res, basePath, platformApi) {
+  // Detect manifest files (also with query params)
+  if (/\.(m3u8|mpd)(\?|$)/.test(targetUrl)) {
+    try {
+      const axiosResponse = await axios.get(targetUrl, { responseType: 'text' });
+      let manifestText = axiosResponse.data;
+      const baseUrl = targetUrl.replace(/\/[^\/?#]+$/, '/');
+
+      // 1. Convert relative paths to absolute CDN URLs (also with query params)
+      manifestText = manifestText.replace(
+        /^([^\s#][^\s?]*\.[a-z0-9]+(\?[^\s]*)?)$/gim,
+        (match) => {
+          if (match.startsWith('http')) return match;
+          return new URL(match, baseUrl).href;
+        }
+      );
+
+      // Rewrite #EXT-X-MAP:URI="..." to proxy URL (always as query)
+      manifestText = manifestText.replace(
+        /(#EXT-X-MAP:URI=")([^"]+)"/g,
+        (full, prefix, uri) => {
+          let abs = uri;
+          if (!abs.startsWith('http')) abs = new URL(uri, baseUrl).href;
+          return `${prefix}${basePath}/proxy?url=${encodeURIComponent(abs)}"`;
+        }
+      );
+
+      // 2. Rewrite all CDN URLs to proxy URLs (any extension, always as query)
+      manifestText = manifestText.replace(
+        /(https?:\/\/[^\s"']+\.[a-z0-9]+(\?[^\s"']*)?)/gim,
+        (match) => {
+          if (match.includes(`${basePath}/proxy?url=`)) return match;
+          return `${basePath}/proxy?url=${encodeURIComponent(match)}`;
+        }
+      );
+
+      // For MPD: rewrite SegmentTemplate attributes (initialization, media) as path!
+      if (/\.mpd(\?|$)/.test(targetUrl)) {
+        manifestText = manifestText.replace(
+          /(initialization|media)="([^"]+)"/g,
+          (full, attr, val) => {
+            let abs = val;
+            if (!abs.startsWith('http')) abs = new URL(val, baseUrl).href;
+            // Proxy URL as path, keep placeholders!
+            abs = `${basePath}/proxy/${abs.replace(/^https?:\/\//, '')}`;
+            return `${attr}="${abs}"`;
+          }
+        );
+      }
+
+      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.send(manifestText);
+    } catch (err) {
+      console.error('Manifest Proxy failed:', targetUrl, err?.response?.status, err?.message);
+      res.status(500).send('Proxy failed');
+    }
+    return;
+  }
+
+  try {
+    // Forward all other requests directly
+    await platformApi.proxy(targetUrl, res);
+  } catch (err) {
+    console.error('Proxy failed for:', targetUrl, err?.response?.status, err?.message);
+    res.status(500).send('Proxy failed');
+  }
 }

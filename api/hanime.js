@@ -1,11 +1,13 @@
 import axios from 'axios';
 import crypto from 'crypto';
 import UserAgent from 'fake-useragent';
-import { videojson } from '../utils/video.js';
+import { videojson, formatViews } from '../utils/video.js';
 import { categoryjson } from '../utils/category.js';
 import { registerPlatformRoutes } from '../utils/platformRouter.js';
 import { platformjson } from '../utils/platform.js';
+import { videoArrJson, subtitlesArrJson } from '../utils/arr.js';
 
+// Returns headers for Hanime API requests
 function getApiHeaders() {
   return {
     'X-Signature-Version': 'web2',
@@ -17,6 +19,7 @@ function getApiHeaders() {
   };
 }
 
+// Fetch all categories from Hanime
 export async function getCategories() {
   const url = 'https://hanime.tv/api/v8/browse';
   const { data } = await axios.get(url, { headers: getApiHeaders() });
@@ -32,6 +35,7 @@ export async function getCategories() {
   );
 }
 
+// Fetch videos for a category and page
 export async function getCategory(category, page = 1) {
   const tagsUrl = 'https://hanime.tv/api/v8/browse';
   const { data: tagsData } = await axios.get(tagsUrl, { headers: getApiHeaders() });
@@ -51,7 +55,7 @@ export async function getCategory(category, page = 1) {
       thumbnail: x.poster_url,
       url: `https://hanime.tv/videos/hentai/${x.slug}`,
       duration: x.duration,
-      views: x.views,
+      views: formatViews(x.views),
       source: "hanime",
       orientation: null
     })
@@ -60,6 +64,7 @@ export async function getCategory(category, page = 1) {
   return { videos: results, totalPages, orientation: null };
 }
 
+// Search videos by query and page
 export async function search(query, page = 1) {
   const url = 'https://search.htv-services.com/search';
   const body = {
@@ -92,7 +97,7 @@ export async function search(query, page = 1) {
       thumbnail: x.poster_url || x.cover_url || null,
       url: `https://hanime.tv/videos/hentai/${x.slug}`,
       duration: null,
-      views: x.views,
+      views: formatViews(x.views),
       source: "hanime",
       orientation: null
     })
@@ -101,6 +106,7 @@ export async function search(query, page = 1) {
   return { results, totalPages };
 }
 
+// Fetch featured videos
 export async function featured() {
   const url = `https://hanime.tv/api/v8/browse-trending?time=month&page=1&order_by=views&ordering=desc`;
   const { data } = await axios.get(url, { headers: getApiHeaders() });
@@ -112,13 +118,14 @@ export async function featured() {
       thumbnail: x.poster_url || x.cover_url || null,
       url: `https://hanime.tv/videos/hentai/${x.slug}`,
       duration: x.duration,
-      views: x.views,
+      views: formatViews(x.views),
       source: "hanime",
       orientation: null
     })
   );
 }
 
+// Get video and subtitle URLs for a given video page
 export async function getVidUrl(url) {
   let slug = url;
   if (url.startsWith('http')) {
@@ -129,34 +136,53 @@ export async function getVidUrl(url) {
   const apiUrl = `https://hanime.tv/api/v8/video?id=${slug}`;
   const { data } = await axios.get(apiUrl, { headers: getApiHeaders() });
 
-  if (
-    !data ||
-    !data.videos_manifest ||
-    !data.videos_manifest.servers ||
-    !Array.isArray(data.videos_manifest.servers)
-  ) return null;
+  if (!data || !data.videos_manifest || !data.videos_manifest.servers) return null;
 
-  let m3u8Streams = [];
+  // Collect video sources as array
+  let videoArr = [];
   for (const server of data.videos_manifest.servers) {
     for (const stream of server.streams || []) {
       if (stream.url && stream.url.endsWith('.m3u8')) {
-        m3u8Streams.push({
-          width: stream.width || 0,
-          height: stream.height || 0,
-          url: stream.url
-        });
+        let quality = stream.width ? String(stream.width) : null;
+        const match = stream.url.match(/(\d{3,4})p/);
+        if (!quality && match) quality = match[1];
+        if (quality) videoArr.push({ quality, url: stream.url, source: "hanime" });
       }
     }
   }
 
-  if (m3u8Streams.length === 0) return null;
-  m3u8Streams.sort((a, b) => (b.width || 0) - (a.width || 0));
-  const best = m3u8Streams.find(s => s.url) || m3u8Streams[0];
+  // Sort by quality (descending)
+  videoArr.sort((a, b) => parseInt(b.quality) - parseInt(a.quality));
+  videoArr = videoArr.map(videoArrJson);
 
-  return best.url || null;
+  // Collect subtitles as array
+  let subtitlesArr = [];
+  if (data.hentai_video && Array.isArray(data.hentai_video.subtitles)) {
+    subtitlesArr = data.hentai_video.subtitles
+      .filter(sub => sub.url)
+      .map(sub => subtitlesArrJson({
+        lang: sub.language && sub.language.toLowerCase().startsWith('eng') ? 'en'
+             : sub.language && sub.language.toLowerCase().startsWith('jap') ? 'jp'
+             : sub.language && sub.language.toLowerCase().startsWith('chi') ? 'ch'
+             : sub.language && sub.language.toLowerCase().startsWith('ger') ? 'de'
+             : sub.language && sub.language.toLowerCase().startsWith('spa') ? 'es'
+             : sub.language && sub.language.toLowerCase().startsWith('fre') ? 'fr'
+             : sub.language && sub.language.toLowerCase().startsWith('por') ? 'pt'
+             : sub.language && sub.language.toLowerCase().startsWith('rus') ? 'ru'
+             : sub.language && sub.language.toLowerCase().startsWith('hin') ? 'hi'
+             : 'unknown',
+        label: sub.language,
+        url: sub.url
+      }));
+
+    // Always put English first
+    subtitlesArr.sort((a, b) => (a.lang === "en" ? -1 : b.lang === "en" ? 1 : 0));
+  }
+
+  return { source: { videoArr, subtitlesArr } };
 }
 
-// 6. Proxy
+// Proxy a video stream with default headers
 export async function proxy(url, res) {
   try {
     const response = await axios.get(url, {
@@ -164,17 +190,13 @@ export async function proxy(url, res) {
       responseType: 'stream',
       timeout: 15000
     });
-    res.set(response.headers);
+    res.set({
+      ...response.headers,
+      'Access-Control-Allow-Origin': '*', // Allow CORS
+    });
     response.data.pipe(res);
   } catch (err) {
-    console.error('Proxy segment failed:', url, err?.code, err?.message);
-    if (err.code === 'ECONNABORTED') {
-      res.status(504).send('Gateway Timeout');
-    } else if (err.response) {
-      res.status(err.response.status).send('Upstream error');
-    } else {
-      res.status(500).send('Proxy failed');
-    }
+    res.status(500).send('Proxy failed');
   }
 }
 
@@ -183,6 +205,7 @@ export const platformLabel = "hanime.tv";
 export const platformComment = "Watch Free Hentai Video Streams Online in 720p, 1080p HD - hanime.tv";
 export const platformSettings = { orientation: null };
 
+// Returns platform info for platformRouter
 export function getPlatformInfo() {
   return platformjson({
     id: platformId,
@@ -192,6 +215,7 @@ export function getPlatformInfo() {
   });
 }
 
+// Registers all routes for this platform
 export function registerRoutes(app, basePath) {
   registerPlatformRoutes(app, basePath, {
     getCategories,
