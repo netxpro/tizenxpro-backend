@@ -249,11 +249,12 @@ export async function proxy(videoUrlRaw, res) {
   }
 
   try {
-    // No req.headers.range possible! Optionally set fake Range:
-    const range = undefined; // or e.g. "bytes=0-" if needed
+    // Always set HSTREAM_HEADERS for all proxied files (videos, subtitles, etc.)
     const axiosResponse = await axios.get(videoUrl, {
       responseType: 'stream',
-      headers: range ? { Range: range } : {},
+      headers: {
+        ...HSTREAM_HEADERS,
+      },
       maxRedirects: 5,
     });
 
@@ -306,3 +307,60 @@ export function registerRoutes(app, basePath) {
     proxy,
   });
 }
+
+
+// if ass on tv not work 
+// import assToVtt from 'ass-to-vtt';
+// import stream from 'stream';
+
+// export async function proxy(videoUrlRaw, res) {
+//   const videoUrl = videoUrlRaw;
+//   if (!videoUrl) {
+//     return res.status(400).send('Missing video URL');
+//   }
+
+//   try {
+//     // Prüfe, ob es eine .ass-Datei ist
+//     if (videoUrl.endsWith('.ass')) {
+//       // Lade die ASS-Datei als Text
+//       const { data } = await axios.get(videoUrl, {
+//         headers: HSTREAM_HEADERS,
+//         responseType: 'text',
+//         maxRedirects: 5,
+//       });
+//       
+//       const vtt = assToVtt(data);
+//       res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+//       res.setHeader('Access-Control-Allow-Origin', '*');
+//       res.send(vtt);
+//       return;
+//     }
+
+//     const axiosResponse = await axios.get(videoUrl, {
+//       responseType: 'stream',
+//       headers: HSTREAM_HEADERS,
+//       maxRedirects: 5,
+//     });
+
+//     const headersToSet = [
+//       'content-type',
+//       'content-length',
+//       'accept-ranges',
+//       'content-range',
+//       'content-disposition',
+//     ];
+
+//     headersToSet.forEach((header) => {
+//       const value = axiosResponse.headers[header];
+//       if (value) {
+//         res.setHeader(header, value);
+//       }
+//     });
+//     res.setHeader('Access-Control-Allow-Origin', '*');
+//     res.status(axiosResponse.status);
+//     axiosResponse.data.pipe(res);
+//   } catch (error) {
+//     console.error('Proxy error:', error.message);
+//     res.status(500).send('Error proxying video stream');
+//   }
+// }

@@ -50,7 +50,7 @@ export function registerPlatformRoutes(app, basePath, platformApi) {
       }
       return res.json(result);
     } catch (err) {
-      res.status(500).json({ error: 'Internal server error' });
+      res.status(500).json({ error: 'Internal server error' + err});
     }
   });
 
@@ -128,9 +128,9 @@ async function handleProxy(targetUrl, req, res, basePath, platformApi) {
             return `${attr}="${abs}"`;
           }
         );
+        res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
       }
 
-      res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.send(manifestText);
     } catch (err) {
@@ -141,8 +141,14 @@ async function handleProxy(targetUrl, req, res, basePath, platformApi) {
   }
 
   try {
-    // Forward all other requests directly
-    await platformApi.proxy(targetUrl, res);
+    // Hole die Datei selbst, setze Header, dann streame
+    const response = await axios.get(targetUrl, { responseType: 'stream' });
+    // Setze alle relevanten Header VOR dem Senden!
+    Object.entries(response.headers).forEach(([key, value]) => {
+      res.setHeader(key, value);
+    });
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    response.data.pipe(res);
   } catch (err) {
     console.error('Proxy failed for:', targetUrl, err?.response?.status, err?.message);
     res.status(500).send('Proxy failed');
