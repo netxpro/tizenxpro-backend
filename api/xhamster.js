@@ -38,35 +38,9 @@ function getBaseUrl(orientation = "straight") {
   }
 }
 
-// Fetch categories for a given orientation
-export async function getXhamsterCategories(orientation = "straight") {
-  const base = getBaseUrl(orientation);
-  const url = `${base}/categories/hd`;
-  const { data } = await xhamsterGet(url);
-  const $ = cheerio.load(data);
-  const categories = [];
-  $('div.categories-list__item').each((_, el) => {
-    const name = $(el).find('.categories-list__name').text().trim();
-    const href = $(el).find('a.categories-list__link').attr('href');
-    const img = $(el).find('img.categories-list__thumb').attr('src');
-    const id = href ? href.split('/').filter(Boolean).pop() : name.toLowerCase();
-    if (name && href) {
-      categories.push(categoryjson({
-        id,
-        name,
-        image: img,
-        description: null,
-        url: href,
-        source: "xhamster"
-      }));
-    }
-  });
-  return categories;
-}
-
 // Fetch all categories (main page)
 export async function getCategories() {
-  const url = "https://xhamster.com/categories";
+  const url = `${base}/categories`;
   const { data } = await axios.get(url, { headers: XHAMSTER_HEADERS });
   const $ = cheerio.load(data);
   const categories = [];
