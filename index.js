@@ -1,12 +1,7 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
-
-// import * as hanime from './api/hanime.js';
-// import * as xhamster from './api/xhamster.js';
-
-// hanime.registerRoutes(app, '/api/hanime');
-// xhamster.registerRoutes(app, '/api/xhamster');
+import os from 'os';
 
 const app = express();
 
@@ -55,6 +50,20 @@ app.get('/api/platforms', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3001;
+const interfaces = os.networkInterfaces();
+let localIp = 'localhost';
+
+for (const name of Object.keys(interfaces)) {
+  for (const iface of interfaces[name]) {
+    if (iface.family === 'IPv4' && !iface.internal) {
+      localIp = iface.address;
+      break;
+    }
+  }
+}
+
 app.listen(PORT, '0.0.0.0', () =>
-  console.log(`API server running on http://0.0.0.0:${PORT}`)
+  console.log(`API xpro-server running on:
+  → http://0.0.0.0:${PORT}
+  → http://${localIp}:${PORT}`)
 );

@@ -38,32 +38,6 @@ function getBaseUrl(orientation = "straight") {
   }
 }
 
-// Fetch categories for a given orientation
-// export async function getXhamsterCategories(orientation = "straight") {
-//   const base = getBaseUrl(orientation);
-//   const url = `${base}/categories`;
-//   const { data } = await xhamsterGet(url);
-//   const $ = cheerio.load(data);
-//   const categories = [];
-//   $('div.categories-list__item').each((_, el) => {
-//     const name = $(el).find('.categories-list__name').text().trim();
-//     const href = $(el).find('a.categories-list__link').attr('href');
-//     const img = $(el).find('img.categories-list__thumb').attr('src');
-//     const id = href ? href.split('/').filter(Boolean).pop() : name.toLowerCase();
-//     if (name && href) {
-//       categories.push(categoryjson({
-//         id,
-//         name,
-//         image: img,
-//         description: null,
-//         url: href,
-//         source: "xhamster"
-//       }));
-//     }
-//   });
-//   return categories;
-// }
-
 // Fetch all categories (main page)
 export async function getCategories(req) {
   const orientation = req?.query?.orientation || "straight";
@@ -311,35 +285,37 @@ export async function getVidUrl(url) {
   // Try to extract subtitles from JS object
   const scriptTagMatch = data.match(/<script[^>]+id=["']initials-script["'][^>]*>([\s\S]*?)<\/script>/i);
   let subtitlesArr = [];
-  if (scriptTagMatch && scriptTagMatch[1]) {
-    const initialsObjStr = extractObjectFromScript(scriptTagMatch[1], 'window.initials');
-    let initials = null;
-    try {
-      if (initialsObjStr) initials = JSON5.parse(initialsObjStr);
-    } catch (e) {
-      console.error('[XHAMSTER] Error parsing:', e.message);
-    }
+  //TODO: BUGFIXING - Subtitles not working
 
-    // Try to find subtitles in all possible structures
-    const tracks =
-      initials?.xplayerPluginSettings?.subtitles?.tracks ||
-      initials?.xplayerSettings?.subtitles?.tracks ||
-      initials?.subtitles?.tracks;
+  // if (scriptTagMatch && scriptTagMatch[1]) {
+  //   const initialsObjStr = extractObjectFromScript(scriptTagMatch[1], 'window.initials');
+  //   let initials = null;
+  //   try {
+  //     if (initialsObjStr) initials = JSON5.parse(initialsObjStr);
+  //   } catch (e) {
+  //     console.error('[XHAMSTER] Error parsing:', e.message);
+  //   }
 
-    if (Array.isArray(tracks)) {
-      subtitlesArr = tracks.map(track => {
-        const url = track.urls?.vtt;
-        return url ? subtitlesArrJson({
-          lang: track.lang,
-          label: track.label,
-          url
-        }) : null;
-      }).filter(Boolean);
+  //   // Try to find subtitles in all possible structures
+  //   const tracks =
+  //     initials?.xplayerPluginSettings?.subtitles?.tracks ||
+  //     initials?.xplayerSettings?.subtitles?.tracks ||
+  //     initials?.subtitles?.tracks;
 
-      // Always put English first
-      subtitlesArr.sort((a, b) => (a.lang === "en" ? -1 : b.lang === "en" ? 1 : 0));
-    }
-  }
+  //   if (Array.isArray(tracks)) {
+  //     subtitlesArr = tracks.map(track => {
+  //       const url = track.urls?.vtt;
+  //       return url ? subtitlesArrJson({
+  //         lang: track.lang,
+  //         label: track.label,
+  //         url
+  //       }) : null;
+  //     }).filter(Boolean);
+
+  //     // Always put English first
+  //     subtitlesArr.sort((a, b) => (a.lang === "en" ? -1 : b.lang === "en" ? 1 : 0));
+  //   }
+  // }
 
   // Return like hstream
   return {
@@ -380,7 +356,7 @@ export function registerRoutes(app, basePath) {
     search,
     featured,
     getVidUrl,
-    proxy,
+    getProxyHeaders,
   });
 }
 
@@ -399,4 +375,11 @@ function extractObjectFromScript(script, varName) {
   }
   if (open !== 0) return null;
   return script.slice(start, end);
+}
+
+function getProxyHeaders(url, req) {
+  if (url.includes('xhamster.com')) {
+    return XHAMSTER_HEADERS;
+  }
+  return {};
 }

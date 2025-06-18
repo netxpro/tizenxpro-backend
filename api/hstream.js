@@ -33,7 +33,6 @@ export async function getCategories() {
   $('div.grid a[href*="tags%5B0%5D="]').each((_, el) => {
     const href = $(el).attr('href');
     const name = $(el).find('h2').text().trim();
-    // Take the first image as thumbnail
     const img = $(el).find('img').first().attr('src');
     // Extract tag
     const tagMatch = href.match(/tags%5B0%5D=([^&]+)/);
@@ -146,7 +145,6 @@ export async function featured() {
     const href = a.attr('href');
     const title = a.find('img').attr('alt') || a.find('p.text-sm').text().trim();
     const img = a.find('img').attr('src');
-    // Duration (top right)
     const duration = a.find('p.absolute.right-2.top-2').text().trim() || null;
     // Views (bottom left, after the eye icon)
     let views = null;
@@ -230,7 +228,12 @@ export async function getVidUrl(url) {
     else if (link.text.includes('hindi') || link.href.toLowerCase().includes('hin')) lang = "hi";
     else if (link.text.includes('portuguese') || link.href.toLowerCase().includes('pt')) lang = "pt";
 
-    subtitlesArr.push(subtitlesArrJson({ lang, label: lang, url: link.href }));
+    // Always use proxy for subtitles
+    subtitlesArr.push(subtitlesArrJson({
+      lang,
+      label: lang,
+      url: `${encodeURIComponent(link.href)}`
+    }));
   }
 
   // Always put English first
@@ -241,45 +244,7 @@ export async function getVidUrl(url) {
   return { source: { videoArr, subtitlesArr } };
 }
 
-// Proxy a video stream with default headers
-export async function proxy(videoUrlRaw, res) {
-  const videoUrl = videoUrlRaw;
-  if (!videoUrl) {
-    return res.status(400).send('Missing video URL');
-  }
-
-  try {
-    // Always set HSTREAM_HEADERS for all proxied files (videos, subtitles, etc.)
-    const axiosResponse = await axios.get(videoUrl, {
-      responseType: 'stream',
-      headers: {
-        ...HSTREAM_HEADERS,
-      },
-      maxRedirects: 5,
-    });
-
-    const headersToSet = [
-      'content-type',
-      'content-length',
-      'accept-ranges',
-      'content-range',
-      'content-disposition',
-    ];
-
-    headersToSet.forEach((header) => {
-      const value = axiosResponse.headers[header];
-      if (value) {
-        res.setHeader(header, value);
-      }
-    });
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.status(axiosResponse.status);
-    axiosResponse.data.pipe(res);
-  } catch (error) {
-    console.error('Proxy error:', error.message);
-    res.status(500).send('Error proxying video stream');
-  }
-}
+// No subtitle proxy/convert logic here! Handled globally in platformRouter.js
 
 export const platformId = "hstream";
 export const platformLabel = "hstream.moe";
@@ -296,6 +261,14 @@ export function getPlatformInfo() {
   });
 }
 
+// Proxy headers function
+function getProxyHeaders(url, req) {
+  if (url.includes('hstream.moe')) {
+    return HSTREAM_HEADERS;
+  }
+  return {};
+}
+
 // Registers all routes for this platform
 export function registerRoutes(app, basePath) {
   registerPlatformRoutes(app, basePath, {
@@ -304,63 +277,6 @@ export function registerRoutes(app, basePath) {
     search,
     featured,
     getVidUrl,
-    proxy,
+    getProxyHeaders,
   });
 }
-
-
-// if ass on tv not work 
-// import assToVtt from 'ass-to-vtt';
-// import stream from 'stream';
-
-// export async function proxy(videoUrlRaw, res) {
-//   const videoUrl = videoUrlRaw;
-//   if (!videoUrl) {
-//     return res.status(400).send('Missing video URL');
-//   }
-
-//   try {
-//     // Prüfe, ob es eine .ass-Datei ist
-//     if (videoUrl.endsWith('.ass')) {
-//       // Lade die ASS-Datei als Text
-//       const { data } = await axios.get(videoUrl, {
-//         headers: HSTREAM_HEADERS,
-//         responseType: 'text',
-//         maxRedirects: 5,
-//       });
-//       
-//       const vtt = assToVtt(data);
-//       res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
-//       res.setHeader('Access-Control-Allow-Origin', '*');
-//       res.send(vtt);
-//       return;
-//     }
-
-//     const axiosResponse = await axios.get(videoUrl, {
-//       responseType: 'stream',
-//       headers: HSTREAM_HEADERS,
-//       maxRedirects: 5,
-//     });
-
-//     const headersToSet = [
-//       'content-type',
-//       'content-length',
-//       'accept-ranges',
-//       'content-range',
-//       'content-disposition',
-//     ];
-
-//     headersToSet.forEach((header) => {
-//       const value = axiosResponse.headers[header];
-//       if (value) {
-//         res.setHeader(header, value);
-//       }
-//     });
-//     res.setHeader('Access-Control-Allow-Origin', '*');
-//     res.status(axiosResponse.status);
-//     axiosResponse.data.pipe(res);
-//   } catch (error) {
-//     console.error('Proxy error:', error.message);
-//     res.status(500).send('Error proxying video stream');
-//   }
-// }

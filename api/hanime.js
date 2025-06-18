@@ -200,6 +200,18 @@ export async function proxy(url, res) {
   }
 }
 
+function getProxyHeaders(url, req) {
+  // Für alle Hanime-Server die speziellen Header setzen
+  if (
+    url.includes('hanime.tv') ||
+    url.includes('htv-services.com') ||
+    url.includes('freeanimehentai.net')
+  ) {
+    return getApiHeaders();
+  }
+  return {};
+}
+
 export const platformId = "hanime";
 export const platformLabel = "hanime.tv";
 export const platformComment = "Watch Free Hentai Video Streams Online in 720p, 1080p HD - hanime.tv";
@@ -223,6 +235,6 @@ export function registerRoutes(app, basePath) {
     search,
     featured,
     getVidUrl,
-    proxy,
+    getProxyHeaders,
   });
 }

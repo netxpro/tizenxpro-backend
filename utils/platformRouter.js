@@ -1,7 +1,10 @@
 import axios from 'axios';
+import { spawn } from 'child_process';
+import fs from 'fs/promises';
+import os from 'os';
+import path from 'path';
 
 export function registerPlatformRoutes(app, basePath, platformApi) {
-  // Category endpoints
   app.get(`${basePath}/categories`, async (req, res) => {
     try {
       const categories = await platformApi.getCategories(req);
@@ -50,15 +53,14 @@ export function registerPlatformRoutes(app, basePath, platformApi) {
       }
       return res.json(result);
     } catch (err) {
-      res.status(500).json({ error: 'Internal server error' + err});
+      res.status(500).json({ error: 'Internal server error' + err });
     }
   });
 
   // Proxy handler for both variants
   app.get(`${basePath}/proxy`, async (req, res, next) => {
     const targetUrl = req.query.url;
-    if (!targetUrl) return next(); // If no query, pass to next route
-
+    if (!targetUrl) return next();
     await handleProxy(targetUrl, req, res, basePath, platformApi);
   });
 
@@ -79,16 +81,75 @@ export function registerPlatformRoutes(app, basePath, platformApi) {
   });
 }
 
-// Helper function for proxy logic
+// Proxy/Converter
 async function handleProxy(targetUrl, req, res, basePath, platformApi) {
-  // Detect manifest files (also with query params)
+  const getHeaders = platformApi.getProxyHeaders || (() => ({}));
+  const customHeaders = getHeaders(targetUrl, req) || {};
+
+  // convert: .ass, .ssa, .srt → .vtt
+  if (targetUrl.match(/\.(ass|ssa|srt)($|\?)/i)) {
+    try {
+      const { data } = await axios.get(targetUrl, { responseType: 'arraybuffer', headers: customHeaders });
+      const tmpDir = os.tmpdir();
+      const ext = (targetUrl.match(/\.(ass|ssa|srt)/i) || [])[1] || 'ass';
+      const subPath = path.join(tmpDir, `sub_${Date.now()}.${ext}`);
+      const vttPath = path.join(tmpDir, `sub_${Date.now()}.vtt`);
+      await fs.writeFile(subPath, Buffer.from(data));
+
+      await new Promise((resolve, reject) => {
+        const ffmpeg = spawn('ffmpeg', [
+          '-y',
+          '-i', subPath,
+          vttPath
+        ]);
+        ffmpeg.on('close', code => code === 0 ? resolve() : reject(new Error('ffmpeg failed')));
+      });
+
+      const vtt = await fs.readFile(vttPath, 'utf-8');
+      
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+      res.setHeader('Content-Disposition', 'inline; filename="subtitle.vtt"');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS');
+      res.send(vtt);
+
+      await fs.unlink(subPath).catch(() => {});
+      await fs.unlink(vttPath).catch(() => {});
+      return;
+    } catch (err) {
+      console.error('ffmpeg subtitle conversion failed:', err);
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+      res.status(500).send('Subtitle conversion failed');
+      return;
+    }
+  }
+
+  // .vtt
+  if (targetUrl.match(/\.vtt($|\?)/i)) {
+    try {
+      const response = await axios.get(targetUrl, { responseType: 'stream', headers: customHeaders });
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      response.data.pipe(res);
+    } catch (err) {
+      console.error('Proxy failed for:', targetUrl, err?.response?.status, err?.message);
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+
+
+      res.status(500).send('Proxy failed');
+    }
+    return;
+  }
+
+  // Manifest proxy logic (unchanged)
   if (/\.(m3u8|mpd)(\?|$)/.test(targetUrl)) {
     try {
-      const axiosResponse = await axios.get(targetUrl, { responseType: 'text' });
+      const axiosResponse = await axios.get(targetUrl, { responseType: 'text', headers: customHeaders });
       let manifestText = axiosResponse.data;
       const baseUrl = targetUrl.replace(/\/[^\/?#]+$/, '/');
 
-      // 1. Convert relative paths to absolute CDN URLs (also with query params)
       manifestText = manifestText.replace(
         /^([^\s#][^\s?]*\.[a-z0-9]+(\?[^\s]*)?)$/gim,
         (match) => {
@@ -97,7 +158,6 @@ async function handleProxy(targetUrl, req, res, basePath, platformApi) {
         }
       );
 
-      // Rewrite #EXT-X-MAP:URI="..." to proxy URL (always as query)
       manifestText = manifestText.replace(
         /(#EXT-X-MAP:URI=")([^"]+)"/g,
         (full, prefix, uri) => {
@@ -107,7 +167,6 @@ async function handleProxy(targetUrl, req, res, basePath, platformApi) {
         }
       );
 
-      // 2. Rewrite all CDN URLs to proxy URLs (any extension, always as query)
       manifestText = manifestText.replace(
         /(https?:\/\/[^\s"']+\.[a-z0-9]+(\?[^\s"']*)?)/gim,
         (match) => {
@@ -116,14 +175,12 @@ async function handleProxy(targetUrl, req, res, basePath, platformApi) {
         }
       );
 
-      // For MPD: rewrite SegmentTemplate attributes (initialization, media) as path!
       if (/\.mpd(\?|$)/.test(targetUrl)) {
         manifestText = manifestText.replace(
           /(initialization|media)="([^"]+)"/g,
           (full, attr, val) => {
             let abs = val;
             if (!abs.startsWith('http')) abs = new URL(val, baseUrl).href;
-            // Proxy URL as path, keep placeholders!
             abs = `${basePath}/proxy/${abs.replace(/^https?:\/\//, '')}`;
             return `${attr}="${abs}"`;
           }
@@ -135,15 +192,16 @@ async function handleProxy(targetUrl, req, res, basePath, platformApi) {
       res.send(manifestText);
     } catch (err) {
       console.error('Manifest Proxy failed:', targetUrl, err?.response?.status, err?.message);
+      res.setHeader('Access-Control-Allow-Origin', '*');
+
       res.status(500).send('Proxy failed');
     }
     return;
   }
 
+  // Default: stream
   try {
-    // Hole die Datei selbst, setze Header, dann streame
-    const response = await axios.get(targetUrl, { responseType: 'stream' });
-    // Setze alle relevanten Header VOR dem Senden!
+    const response = await axios.get(targetUrl, { responseType: 'stream', headers: customHeaders });
     Object.entries(response.headers).forEach(([key, value]) => {
       res.setHeader(key, value);
     });
@@ -151,6 +209,7 @@ async function handleProxy(targetUrl, req, res, basePath, platformApi) {
     response.data.pipe(res);
   } catch (err) {
     console.error('Proxy failed for:', targetUrl, err?.response?.status, err?.message);
+    res.setHeader('Access-Control-Allow-Origin', '*');
     res.status(500).send('Proxy failed');
   }
 }
